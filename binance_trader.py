@@ -47,7 +47,6 @@ def execute_market(api_key, api_secret, symbol, side, quantity):
                     'type': 'MARKET',
                     'quantity' : quantity,
                     }
-            print(params)
             response = client.new_order(**params)
             executed = []
             for entry in response['fills']:
@@ -105,8 +104,9 @@ def get_market_data(symbol, price_only):
 def get_balance(api_key, api_secret):
     try:
         client = Client(api_key, api_secret,base_url='https://testnet.binance.vision')
-        print("get blanace, client ok")
+        print("get blanace")
         if client:
+            print("client ok")
             info = client.account()
             balances = info['balances']
 
@@ -167,7 +167,6 @@ def get_margin(api_key, api_secret):
     except Exception as e:
         return f"An error occurred: {e}"
 
-
 def get_max_orders(symbol):
     base_url = 'https://api.binance.com'
     endpoint = '/api/v3/exchangeInfo'
@@ -191,7 +190,21 @@ def get_orders(api_key, api_secret, status, symbol, limit=False):
         if client:
             messages = []
             current_message = ''
-            if status == 'outstanding':
+            if status == 'outstanding' and symbol == 'ALL':
+                orders = client.get_open_orders()
+                if len(orders) != 0:
+                    for order in orders:
+                        if order['status'] == 'NEW':
+                            messages.append(f"Order {order['orderId']} submitted to {order['side']} {order['origQty']} {order['symbol']} at {order['price']} still outstanding.\n")
+                        elif order['status'] == 'PARTIALLY_FILLED':
+                            remaining = float(order['origQty']) - float(order['executedQty'])
+                            messages.append(f"Order {order['orderId']} submitted to {order['side']} {order['origQty']} {order['symbol']} at {order['price']}, {order['executedQty']} quantity executed with {remaining} remaining.\n")
+
+                    return messages
+                else:
+                    return False
+
+            elif status == 'outstanding':
                 orders = client.get_orders(symbol=symbol)
                 outstanding_orders = [order for order in orders if order['status'] in ['NEW', 'PARTIALLY_FILLED']]
                 if len(outstanding_orders) != 0:
