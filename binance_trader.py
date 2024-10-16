@@ -1,7 +1,9 @@
+import decimal
 from binance.spot import Spot as Client
 from binance.error import ParameterRequiredError
 from datetime import datetime,timedelta
 import requests
+import pandas as pd
 
 def init_binance_client(api_key, api_secret):
     try:
@@ -12,7 +14,7 @@ def init_binance_client(api_key, api_secret):
         print(f"Error initializing Binance client: {e}")
         return None
 
-def execute_limit(api_key, api_secret, symbol, side, time_in_force, price, quantity):
+async def execute_limit(api_key, api_secret, symbol, side, time_in_force, price, quantity):
     try:
         client = Client(api_key, api_secret,base_url='https://testnet.binance.vision')
         if client:
@@ -37,7 +39,7 @@ def execute_limit(api_key, api_secret, symbol, side, time_in_force, price, quant
     except Exception as e:
         return f"Error executing trade: {e}"
 
-def execute_market(api_key, api_secret, symbol, side, quantity):
+async def execute_market(api_key, api_secret, symbol, side, quantity):
     try:
         client = Client(api_key, api_secret,base_url='https://testnet.binance.vision')
         if client:
@@ -62,6 +64,7 @@ def execute_market(api_key, api_secret, symbol, side, quantity):
         return f"Order executed successfully: {order}"
     except Exception as e:
         return f"Error executing trade: {e}"
+
 
 def get_market_data(symbol, price_only):
     base_url = 'https://api.binance.com'
@@ -101,7 +104,7 @@ def get_market_data(symbol, price_only):
     except requests.exceptions.RequestException as e:
         return f"Error fetching market data: {e}"
 
-def get_balance(api_key, api_secret):
+def get_balance(api_key, api_secret, position, display:bool):
     try:
         client = Client(api_key, api_secret,base_url='https://testnet.binance.vision')
         print("get blanace")
@@ -112,29 +115,61 @@ def get_balance(api_key, api_secret):
 
             messages = []
             current_message = ''
+            spot_positions = {}
+            coin_prices = {}
+
+            if position:
+                products = client.ticker_price()
+                for row in products:
+                    ticker = row["symbol"].replace("USDT", "")
+                    price = float(row["price"])   # usd
+
+                    coin_prices[ticker] = price
             for balance in balances:
                 asset = balance['asset']
                 free_balance = float(balance['free'])
                 locked_balance = float(balance['locked'])
 
-                if free_balance > 0 or locked_balance > 0:
-                    balance_line = f"Asset: {asset}, Free: {free_balance:.2f}, Locked: {locked_balance:.2f}\n"
+                if not position:
+                    if free_balance > 0 or locked_balance > 0:
+                        balance_line = f"Asset: {asset}, Free: {free_balance:.2f}, Locked: {locked_balance:.2f}\n"
 
-                if len(current_message) + len(balance_line) > 4096:
-                    messages.append(current_message.strip())  # Add the current chunk to the list
-                    current_message = balance_line  # Start a new message with the current line
+                    if len(current_message) + len(balance_line) > 4096:
+                        messages.append(current_message.strip())  # Add the current chunk to the list
+                        current_message = balance_line  # Start a new message with the current line
+                    else:
+                        # Otherwise, add the line to the current message
+                        current_message += balance_line
+                elif position:
+                    if free_balance > 0:
+                        if asset in coin_prices.keys() or asset in ["USDT", "USDC", "BUSD"]:
+                            if asset in ["USDT", "USDC", "BUSD"]:
+                                usd_value = free_balance
+                            else:
+                                price = coin_prices[asset]
+                                usd_value = round(free_balance * price, 2)
+
+                            if usd_value > 3:
+                                spot_positions[asset] = {"coin_amount": free_balance, "usd_value": usd_value}
+
+            if not position:
+
+                # Append the last accumulated message (if any)
+                if current_message:
+                    messages.append(current_message.strip())
+
+                if len(messages) == 0:
+                    return False
                 else:
-                    # Otherwise, add the line to the current message
-                    current_message += balance_line
+                    return messages
 
-             # Append the last accumulated message (if any)
-            if current_message:
-                messages.append(current_message.strip())
+            elif position:
+                if display:
+                    print("Current positions:")
+                    positions_df = pd.DataFrame.from_dict(spot_positions, orient="index")
+                    print(positions_df.to_markdown())
 
-            if len(messages) == 0:
-                return False
-            else:
-                return messages
+                return spot_positions
         else:
             return('Failed to initialize Binance client. Please check your API key and secret.')
 
@@ -166,6 +201,7 @@ def get_margin(api_key, api_secret):
 
     except Exception as e:
         return f"An error occurred: {e}"
+
 
 def get_max_orders(symbol):
     base_url = 'https://api.binance.com'
@@ -269,3 +305,55 @@ def cancel_orders(api_key, api_secret, symbol, order_id):
             return ('Failed to initialize Binance client. Please check your API key and secret.')
     except Exception as e:
         return f"Failed to cancel order: {e}"
+
+def get_instrument_info(api_key, api_secret, symbol):
+    try:
+        client = Client(api_key, api_secret, base_url='https://testnet.binance.vision')
+        print('get symbol info, client ok')
+        if client:
+            exchange_info = client.exchange_info()
+
+            # Find the symbol information from the exchange info
+            symbol_info = next((item for item in exchange_info['symbols'] if item["symbol"] == symbol), None)
+
+            if symbol_info:
+                min_notional = None
+                decimals = None
+                min_qty = None
+                max_qty = None
+                max_notional = None
+                tick_decimals = None
+                for row in symbol_info["filters"]:
+                    if row["filterType"] == "NOTIONAL":
+                        min_notional = float(row["minNotional"])
+                        max_notional = float(row.get("maxNotional", 'inf')) # Some pairs may not have maxNotional
+                    elif row["filterType"] == "LOT_SIZE":
+
+                        min_qty = float(row["minQty"])
+                        max_qty = float(row["maxQty"])
+
+                        min_qty_ = decimal.Decimal(row["minQty"]).normalize()
+                        decimals = abs(min_qty_.as_tuple().exponent)
+                    elif row["filterType"] == "PRICE_FILTER":
+                        tick_size = decimal.Decimal(row["tickSize"]).normalize()
+                        tick_decimals = abs(tick_size.as_tuple().exponent)
+
+                print(min_notional, max_notional, decimals, tick_decimals ,min_qty, max_qty)
+                return min_notional, max_notional, decimals, tick_decimals ,min_qty, max_qty
+        else:
+            return ('Failed to initialize Binance client. Please check your API key and secret.')
+    except Exception as e:
+        print (f"Failed to get instrument information: {e}")
+        return None, None, None, None, None, None
+
+def get_last_price(symbol):
+
+    endpoint = "https://api.binance.com/api/v3/ticker/price"
+
+    resp = requests.get(endpoint, params={"symbol":symbol}).json()
+    last_price = float(resp["price"])
+
+    return last_price
+
+
+
